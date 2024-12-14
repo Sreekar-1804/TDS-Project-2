@@ -8,12 +8,18 @@
 import os
 import pandas as pd
 import numpy as np
-import seaborn as sns
 import matplotlib.pyplot as plt
 import argparse
 import requests
 import json
 import openai
+
+# Try importing seaborn; if unavailable, skip related functionality.
+try:
+    import seaborn as sns
+    seaborn_available = True
+except ImportError:
+    seaborn_available = False
 
 # Perform data analysis: Summary statistics, missing values, and correlation matrix
 def analyze_dataset(dataframe):
@@ -25,7 +31,7 @@ def analyze_dataset(dataframe):
         dataframe (pd.DataFrame): The input dataset as a DataFrame.
 
     Returns:
-        dict: A dictionary containing summary statistics, missing values, skewness, kurtosis, and correlation matrix.
+        dict: A dictionary containing summary statistics, missing values, and correlation matrix.
     """
     print("Performing data analysis...")
 
@@ -35,10 +41,6 @@ def analyze_dataset(dataframe):
     # Identify missing values
     missing = dataframe.isnull().sum()
 
-    # Skewness and Kurtosis
-    skewness = dataframe.skew(numeric_only=True)
-    kurtosis = dataframe.kurt(numeric_only=True)
-
     # Generate correlation matrix for numeric columns
     numeric_data = dataframe.select_dtypes(include=[np.number])
     correlation = numeric_data.corr() if not numeric_data.empty else pd.DataFrame()
@@ -47,8 +49,6 @@ def analyze_dataset(dataframe):
     return {
         "summary": summary,
         "missing": missing,
-        "skewness": skewness,
-        "kurtosis": kurtosis,
         "correlation": correlation,
     }
 
@@ -92,10 +92,10 @@ def generate_visuals(analysis_results, outliers, dataframe, output_folder):
 
     visualization_paths = {}
 
-    # Heatmap of the correlation matrix
-    heatmap_path = os.path.join(output_folder, 'correlation_matrix.png')
+    # Heatmap of the correlation matrix (if seaborn is available)
     correlation = analysis_results["correlation"]
-    if not correlation.empty:
+    if seaborn_available and not correlation.empty:
+        heatmap_path = os.path.join(output_folder, 'correlation_matrix.png')
         plt.figure(figsize=(10, 8))
         sns.heatmap(correlation, annot=True, cmap='coolwarm', fmt='.2f', linewidths=0.5)
         plt.title('Correlation Matrix')
@@ -104,6 +104,8 @@ def generate_visuals(analysis_results, outliers, dataframe, output_folder):
         plt.savefig(heatmap_path)
         plt.close()
         visualization_paths["heatmap"] = heatmap_path
+    else:
+        print("Seaborn unavailable or correlation matrix is empty. Skipping heatmap.")
 
     # Outliers plot
     if not outliers.empty and outliers.sum() > 0:
@@ -117,12 +119,18 @@ def generate_visuals(analysis_results, outliers, dataframe, output_folder):
         plt.close()
         visualization_paths["outliers"] = outliers_path
 
-    # Pairplot for numeric data relationships
-    pairplot_path = os.path.join(output_folder, 'pairplot.png')
-    sns.pairplot(dataframe.select_dtypes(include=[np.number]).dropna())
-    plt.savefig(pairplot_path)
-    plt.close()
-    visualization_paths["pairplot"] = pairplot_path
+    # Distribution plot for the first numeric column
+    numeric_columns = dataframe.select_dtypes(include=[np.number]).columns
+    if numeric_columns.any():
+        distribution_path = os.path.join(output_folder, 'distribution.png')
+        plt.figure(figsize=(10, 6))
+        plt.hist(dataframe[numeric_columns[0]].dropna(), bins=30, color='blue', alpha=0.7)
+        plt.title(f'Distribution of {numeric_columns[0]}')
+        plt.xlabel(numeric_columns[0])
+        plt.ylabel('Frequency')
+        plt.savefig(distribution_path)
+        plt.close()
+        visualization_paths["distribution"] = distribution_path
 
     print("Visualizations creation finished.")
     return visualization_paths
@@ -133,7 +141,7 @@ def create_report(analysis_results, outliers, visualizations, output_folder):
     Generate a Markdown report summarizing the analysis and integrating visualizations.
 
     Args:
-        analysis_results (dict): Analysis results including summary, missing values, skewness, kurtosis, and correlation matrix.
+        analysis_results (dict): Analysis results including summary, missing values, and correlation matrix.
         outliers (pd.Series): Count of outliers per numeric column.
         visualizations (dict): Paths to the generated visualizations.
         output_folder (str): Directory to save the README file.
@@ -152,12 +160,6 @@ def create_report(analysis_results, outliers, visualizations, output_folder):
             file.write("## Missing Values\n")
             file.write(analysis_results["missing"].to_markdown() + "\n\n")
 
-            file.write("## Skewness and Kurtosis\n")
-            file.write("### Skewness\n")
-            file.write(analysis_results["skewness"].to_markdown() + "\n\n")
-            file.write("### Kurtosis\n")
-            file.write(analysis_results["kurtosis"].to_markdown() + "\n\n")
-
             file.write("## Correlation Matrix\n")
             if "heatmap" in visualizations:
                 file.write("![Correlation Matrix]({})\n\n".format(visualizations["heatmap"]))
@@ -166,57 +168,19 @@ def create_report(analysis_results, outliers, visualizations, output_folder):
             if "outliers" in visualizations:
                 file.write("![Outliers Count]({})\n\n".format(visualizations["outliers"]))
 
-            file.write("## Pairplot\n")
-            if "pairplot" in visualizations:
-                file.write("![Pairplot]({})\n\n".format(visualizations["pairplot"]))
+            file.write("## Distribution Plot\n")
+            if "distribution" in visualizations:
+                file.write("![Distribution]({})\n\n".format(visualizations["distribution"]))
 
             print("README report generated successfully.")
     except Exception as e:
         print(f"Error creating README.md: {e}")
     return readme_path
 
-# Communicate with OpenAI API via proxy to generate a narrative
-def generate_story(prompt, analysis_context):
-    """
-    Use OpenAI API to generate a narrative based on the analysis.
-
-    Args:
-        prompt (str): The input prompt for the narrative.
-        analysis_context (str): Contextual information for the prompt.
-
-    Returns:
-        str: Generated narrative or error message.
-    """
-    try:
-        print("Connecting to OpenAI API for narrative generation...")
-        token = os.getenv("AIPROXY_TOKEN")
-        api_url = "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
-
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        request_data = {
-            "model": "gpt-4o-mini",
-            "messages": [
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": f"{prompt}\nContext: {analysis_context}"}
-            ],
-            "temperature": 0.7
-        }
-
-        response = requests.post(api_url, headers=headers, json=request_data)
-
-        if response.status_code == 200:
-            return response.json()["choices"][0]["message"]["content"]
-        else:
-            print(f"Failed with status {response.status_code}: {response.text}")
-            return "Failed to generate story."
-    except Exception as e:
-        print(f"Error communicating with API: {e}")
-        return "Failed to generate story."
-
 # Main execution
 def main():
     """
-    Main function to orchestrate data analysis, visualization, report generation, and narrative creation.
+    Main function to orchestrate data analysis, visualization, and report generation.
     """
     parser = argparse.ArgumentParser(description="Analyze datasets and generate a report.")
     parser.add_argument('csv_file', help="Path to the CSV dataset")
@@ -231,19 +195,9 @@ def main():
         detected_outliers = identify_outliers(data)
         output_directory = "."
         visualizations = generate_visuals(analysis_results, detected_outliers, data, output_directory)
-        report_path = create_report(analysis_results, detected_outliers, visualizations, output_directory)
+        create_report(analysis_results, detected_outliers, visualizations, output_directory)
 
-        # Story generation
-        narrative = generate_story(
-            "Generate a story based on the dataset analysis.",
-            f"Summary: {analysis_results['summary']}\nMissing: {analysis_results['missing']}\nSkewness: {analysis_results['skewness']}\nKurtosis: {analysis_results['kurtosis']}\nCorrelation: {analysis_results['correlation']}\nOutliers: {detected_outliers}"
-        )
-
-        if report_path:
-            with open(report_path, 'a') as f:
-                f.write("\n## Story\n" + narrative + "\n")
-
-        print(f"Analysis complete. Report saved at: {report_path}")
+        print("Analysis complete. Report saved.")
     except Exception as e:
         print(f"Error: {e}")
 
